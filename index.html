@@ -137,7 +137,7 @@ button{font-family:inherit;cursor:pointer}
   padding:8px;
 }
 .canvas{position:relative;width:100%;overflow:hidden;border-radius:6px;box-shadow:0 0 0 1px var(--border) inset}
-.zone{position:absolute;transition:background-color .25s}
+.zone{position:absolute;transition:background-color .25s;pointer-events:none}
 .zone-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.68rem;color:rgba(255,255,255,.55);pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,.6)}
 .space-tag{font-size:.76rem;color:var(--muted)}
 
@@ -155,7 +155,7 @@ button{font-family:inherit;cursor:pointer}
 .opt:hover:not(.locked){border-color:var(--accent);transform:translateY(-2px)}
 .opt .opt-label{font-size:.78rem;color:var(--muted);display:flex;justify-content:space-between}
 .opt .opt-text{font-size:.98rem;font-weight:600;line-height:1.4}
-.opt .mini-frame{width:100%;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--border)}
+.opt .mini-frame{width:100%;max-width:230px;margin:0 auto;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--border)}
 .opt.correct{border-color:var(--good);background:var(--good-bg);animation:pop .35s ease}
 .opt.wrong{border-color:var(--bad);background:var(--bad-bg);animation:shake .4s ease}
 .opt.reveal-correct{border-color:var(--good);box-shadow:0 0 0 2px var(--good)}
@@ -550,3 +550,993 @@ function statesVisuallyEqual(a,b){
   }
   return true;
 }
+
+/* =========================================================================
+   4. QUESTION GENERATORS (G1-G14)
+   ========================================================================= */
+function randInt(n){ return Math.floor(Math.random()*n); }
+function choice(arr){ return arr[randInt(arr.length)]; }
+function shuffle(arr){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=randInt(i+1); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function sampleN(arr,n){ return shuffle(arr).slice(0, Math.min(n, arr.length)); }
+function round1(x){ return Math.round(x*10)/10; }
+function describeTriple(rgb){ return `R=${fmtVal(rgb[0])}, G=${fmtVal(rgb[1])}, B=${fmtVal(rgb[2])}`; }
+function uniquePerms(arr){
+  const res=[]; const a=arr.slice();
+  function permute(k){
+    if(k===a.length){ res.push(a.slice()); return; }
+    for(let i=k;i<a.length;i++){ [a[k],a[i]]=[a[i],a[k]]; permute(k+1); [a[k],a[i]]=[a[i],a[k]]; }
+  }
+  permute(0);
+  return res;
+}
+
+function makeImageOption(state){ return { kind:'image', state }; }
+function makeTextOption(label){ return { kind:'text', label }; }
+function optsEqual(a,b){
+  if (a.kind !== b.kind) return false;
+  return a.kind === 'text' ? a.label === b.label : statesVisuallyEqual(a.state, b.state);
+}
+function finalizeOptions(correctOption, wrongCandidates, whyCorrect){
+  const filtered = [];
+  for (const c of wrongCandidates){
+    if (optsEqual(c.option, correctOption)) continue;
+    if (filtered.some(f => optsEqual(f.option, c.option))) continue;
+    filtered.push(c);
+    if (filtered.length === 3) break;
+  }
+  let guard = 0;
+  while (filtered.length < 3 && guard < 20){
+    guard++;
+    const jitter = correctOption.kind === 'image'
+      ? makeImageOption((()=>{ const st = cloneState(correctOption.state); const zi = randInt(st.zones.length); st.zones[zi].value = [Math.random(),Math.random(),Math.random()]; return st; })())
+      : makeTextOption(correctOption.label + ' (אפשרות ' + guard + ')');
+    if (optsEqual(jitter, correctOption)) continue;
+    if (filtered.some(f => optsEqual(f.option, jitter))) continue;
+    filtered.push({ option: jitter, why: 'זו אינה התוצאה שהקוד בפועל מייצר.' });
+  }
+  const all = [{ option: correctOption, why: whyCorrect, correct: true }, ...filtered.map(f => ({ option: f.option, why: f.why, correct: false }))];
+  const shuffled = shuffle(all);
+  const correctIndex = shuffled.findIndex(x => x.correct);
+  return {
+    options: shuffled.map(x => x.option),
+    correctIndex,
+    whyCorrectHe: whyCorrect,
+    whyWrongHe: shuffled.map(x => x.correct ? '' : x.why),
+  };
+}
+function rotateZonesState(state){
+  const st = cloneState(state);
+  const vals = state.zones.map(z => z.value);
+  st.zones.forEach((z,i) => z.value = vals[(i+1) % vals.length].slice());
+  return st;
+}
+function swapRBState(state){
+  const st = cloneState(state);
+  st.zones.forEach(z => { const t=z.value[0]; z.value[0]=z.value[2]; z.value[2]=t; });
+  return st;
+}
+function skipLastAssign(lines, assignIdxs, initialState){
+  if (assignIdxs.length === 0) return null;
+  const lastIdx = assignIdxs[assignIdxs.length-1];
+  return computeFinalState(initialState, lines.filter((_,i) => i !== lastIdx));
+}
+
+/* ---- G1: RGB triple -> color name ---- */
+function genG1(){
+  const item = choice(PURE_COLORS);
+  const distractors = sampleN(PURE_COLORS.filter(c => c.he !== item.he), 3);
+  const [r,g,b] = item.rgb;
+  const wrongs = distractors.map(d => ({
+    option: makeTextOption(d.he),
+    why: `${d.he} דורש ${describeTriple(d.rgb)}, וכאן הערכים הם ${describeTriple(item.rgb)} — לא תואם.`,
+  }));
+  const fin = finalizeOptions(makeTextOption(item.he), wrongs,
+    `הערכים (R,G,B) = (${fmtVal(r)},${fmtVal(g)},${fmtVal(b)}) הם בדיוק ${item.he}.`);
+  return {
+    id: 'G1-'+item.he, tier:1, family:'G1',
+    promptHe: `לפיקסל יש את הערכים (R,G,B) = (${fmtVal(r)}, ${fmtVal(g)}, ${fmtVal(b)}). איזה צבע זה?`,
+    lines: [ { code:`px = [${fmtVal(r)} ${fmtVal(g)} ${fmtVal(b)}];`, apply:(s)=>{ findZone(s,'all').value = item.rgb.slice(); }, noteHe:`הפיקסל מקבל את הערכים (R,G,B) = (${fmtVal(r)},${fmtVal(g)},${fmtVal(b)}).` } ],
+    initialState: makeState('full',60,60), showStepper:false,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G2: color name -> RGB swatch ---- */
+function genG2(){
+  const item = choice(PURE_COLORS);
+  const H=40,W=40;
+  const correctState = makeState('full',H,W); findZone(correctState,'all').value = item.rgb.slice();
+  const pool = PURE_COLORS.filter(c => c.he !== item.he).map(c => c.rgb);
+  const perms = uniquePerms(item.rgb).filter(p => !triEq(p, item.rgb, 0.02));
+  const candidatePool = [...pool, ...perms];
+  const wrongs = candidatePool.map(rgb => {
+    const st = makeState('full',H,W); findZone(st,'all').value = rgb.slice();
+    const nm = colorNameOf(rgb);
+    return { option: makeImageOption(st), why: `זהו (R,G,B)=(${rgb.map(fmtVal).join(',')})${nm ? ' — הצבע '+nm : ''}, לא ${item.he}.` };
+  });
+  const fin = finalizeOptions(makeImageOption(correctState), wrongs,
+    `זהו הצבע ${item.he}: (R,G,B) = (${item.rgb.map(fmtVal).join(',')}).`);
+  return {
+    id:'G2-'+item.he, tier:1, family:'G2',
+    promptHe:`איזו תמונה מייצגת את הצבע "${item.he}"?`,
+    lines:[{code:`img = ones(${H},${W},3);  % ${item.he}`, apply:()=>{}, noteHe:''}],
+    initialState: makeState('full',H,W), showStepper:false,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G3: rgb2hsv on a pure color -> HSV triple ---- */
+function genG3(){
+  const item = choice(PURE_COLORS);
+  const [h,s,v] = rgb2hsv(...item.rgb);
+  const distractCandidates = [
+    { val:[s,h,v], why:`כאן הוחלפו H ו-S. הגוון (H) הוא ${fmt3(h)} ולא ${fmt3(s)} — ${fmt3(s)} הוא ערך הרוויה (S).` },
+    { val:[h,v,s], why:`כאן הוחלפו S ו-V. הרוויה בפועל היא ${fmt3(s)} והבהירות ${fmt3(v)}.` },
+    { val:[ (h+0.5)%1, s, v], why:`זהו הגוון של הצבע המשלים (מנוגד באופק הצבעים) — לא הגוון האמיתי ${fmt3(h)}.` },
+    { val:item.rgb.slice(), why:'אלה עדיין הערכים המקוריים של RGB — לא בוצעה המרה בפועל.' },
+    { val:[h,s, clip01(v-0.3)], why:`ה-V כאן שגוי (${fmt3(v)} הוא הערך האמיתי); rgb2hsv על צבע "טהור" עם רכיב מקסימלי 1 נותן תמיד V=1 (חוץ משחור).` },
+    { val:[clip01(1-h), s, v], why:`הגוון כאן חושב הפוך (1−H) — הגוון האמיתי הוא ${fmt3(h)}.` },
+    { val:[v,s,h], why:'כאן הסדר הפוך לגמרי (V,S,H במקום H,S,V) — שימו לב לסדר הנכון של השלושה.' },
+  ];
+  const wrongs = distractCandidates.map(d => ({
+    option: makeTextOption(`(H,S,V) = (${fmt3(d.val[0])}, ${fmt3(d.val[1])}, ${fmt3(d.val[2])})`),
+    why: d.why,
+  }));
+  const fin = finalizeOptions(makeTextOption(`(H,S,V) = (${fmt3(h)}, ${fmt3(s)}, ${fmt3(v)})`), wrongs,
+    `rgb2hsv([${item.rgb.map(fmtVal).join(' ')}]) מחזיר (H,S,V) = (${fmt3(h)}, ${fmt3(s)}, ${fmt3(v)}).`);
+  return {
+    id:'G3-'+item.he, tier:2, family:'G3',
+    promptHe:`מפעילים rgb2hsv על הצבע ${item.he}: (R,G,B) = (${item.rgb.map(fmtVal).join(',')}). מה מחזיר rgb2hsv?`,
+    lines:[{code:`hsv = rgb2hsv([${item.rgb.map(fmtVal).join(' ')}]);`, apply:(s)=>{ findZone(s,'all').value = item.rgb.slice(); }, noteHe:`זהו הצבע ${item.he} לפני ההמרה — rgb2hsv רק מחשב שלושה מספרים חדשים, הוא לא משנה את התמונה עצמה.`}],
+    initialState: makeState('full',60,60), showStepper:false,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G4: hsv2rgb with emphasis on S=0 / V=0 / V=1 ---- */
+function genG4(){
+  const variants = [
+    { h: round1(Math.random()), s: 0, v: round1(0.2+Math.random()*0.7), tag:'S0' },
+    { h: round1(Math.random()), s: round1(0.4+Math.random()*0.6), v: 0, tag:'V0' },
+    { h: choice([0,1/6,1/3,0.5,2/3,5/6]), s:1, v:1, tag:'NORMAL' },
+  ];
+  const picked = choice(variants);
+  const [r,g,b] = hsv2rgb(picked.h, picked.s, picked.v);
+  const H=40,W=40;
+  const correctState = makeState('full',H,W); findZone(correctState,'all').value = [r,g,b];
+  let pool;
+  if (picked.tag === 'S0'){
+    pool = [
+      { rgb: hsv2rgb(picked.h,1,picked.v), why:'כש-S=0 (אין רוויה) הגוון H לא משנה בכלל — התוצאה תמיד גוון אפור, לא צבע רווי.' },
+      { rgb: [1,1,1], why:`רק כש-V=1 מקבלים לבן מלא — כאן V=${fmt3(picked.v)}.` },
+      { rgb: [0,0,0], why:'שחור מתקבל רק כש-V=0 — כאן V שונה מאפס.' },
+    ];
+  } else if (picked.tag === 'V0'){
+    pool = [
+      { rgb: hsv2rgb(picked.h,picked.s,0.6), why:'כש-V=0 התוצאה תמיד שחור מוחלט, בלי קשר ל-H או S.' },
+      { rgb: [0.3,0.3,0.3], why:'V=0 נותן שחור אמיתי (0,0,0), לא אפור כהה.' },
+      { rgb: [1,1,1], why:'זה ההפך: V=0 הוא שחור, לא לבן.' },
+    ];
+  } else {
+    pool = [
+      { rgb: hsv2rgb((picked.h+0.5)%1,1,1), why:'זהו הצבע של הגוון המנוגד — הגוון בשאלה שונה.' },
+      { rgb: [picked.v,picked.v,picked.v], why:'עם S=1 מתקבל צבע רווי, לא אפור.' },
+      { rgb: [0,0,0], why:'עם V=1 התוצאה בהירה במלואה, לא שחורה.' },
+    ];
+  }
+  const wrongs = pool.map(p => {
+    const st = makeState('full',H,W); findZone(st,'all').value = p.rgb;
+    return { option: makeImageOption(st), why: p.why };
+  });
+  const whyCorrect = picked.tag==='S0' ? `S=0 אומר "בלי רוויה" ⇒ אפור בעוצמה V=${fmt3(picked.v)}, בלי קשר לגוון H.`
+    : picked.tag==='V0' ? 'V=0 אומר "אין בהירות בכלל" ⇒ שחור מוחלט, בלי קשר ל-H ו-S.'
+    : `V=1 ו-S=1 נותנים את הצבע הרווי והבהיר ביותר של הגוון H=${fmt3(picked.h)}.`;
+  const fin = finalizeOptions(makeImageOption(correctState), wrongs, whyCorrect);
+  return {
+    id:'G4-'+picked.tag+'-'+Math.round(picked.h*100), tier:2, family:'G4',
+    promptHe:`מפעילים hsv2rgb על (H,S,V) = (${fmt3(picked.h)}, ${fmt3(picked.s)}, ${fmt3(picked.v)}). איזה צבע יתקבל?`,
+    lines:[{code:`rgb = hsv2rgb([${fmt3(picked.h)} ${fmt3(picked.s)} ${fmt3(picked.v)}]);`, apply:()=>{}, noteHe:''}],
+    initialState: makeState('full',H,W), showStepper:false,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G5: V=0 / S=0 / V=1 across a multi-zone HSV image ---- */
+function genG5(){
+  const layoutId = choice(['hsplit2','vsplit2']);
+  const H=200,W=200;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const variant = choice(['V0','S0','NORMAL']);
+  const hues = zones.map(() => round1(Math.random()));
+  let sVals, vVals;
+  if (variant==='V0'){ sVals = zones.map(()=>1); vVals = zones.map(()=>0); }
+  else if (variant==='S0'){ sVals = zones.map(()=>0); vVals = zones.map((_,i)=> round1(0.25+i*0.35)); }
+  else { sVals = zones.map(()=>1); vVals = zones.map(()=>1); }
+
+  const lines = [ lineZeros(H,W) ];
+  zones.forEach((z,i) => lines.push(lineAssign(zoneIndexExpr(z,null,H,W), 0, hues[i], z.id, `הגוון (H) של ${ZONE_HE[z.id]} נקבע ל-${fmt3(hues[i])}.`)));
+  zones.forEach((z,i) => lines.push(lineAssign(zoneIndexExpr(z,null,H,W), 1, sVals[i], z.id, `הרוויה (S) של ${ZONE_HE[z.id]} נקבעת ל-${fmt3(sVals[i])}.`)));
+  zones.forEach((z,i) => lines.push(lineAssign(zoneIndexExpr(z,null,H,W), 2, vVals[i], z.id, `הבהירות (V) של ${ZONE_HE[z.id]} נקבעת ל-${fmt3(vVals[i])}.`)));
+  lines.push(lineConvert('res','img','hsv2rgb'));
+  lines.push(lineImshow('res'));
+
+  const initialState = makeState(layoutId,H,W,'hsv');
+  const correctState = computeFinalState(initialState, lines);
+
+  const wrongCandidates = [];
+  const asNormal = cloneState(initialState);
+  zones.forEach((z,i) => findZone(asNormal,z.id).value = hsv2rgb(hues[i],1,1));
+  wrongCandidates.push({ option: makeImageOption(asNormal), why:
+    variant==='V0' ? 'זו הטעות של להתעלם מ-V=0: כשהבהירות אפס, הגוון H לא משנה כלל — התוצאה שחורה בכל האזורים.'
+    : variant==='S0' ? 'זו הטעות של להתעלם מ-S=0: בלי רוויה הגוון לא קובע צבע — מקבלים גוני אפור לפי V בלבד.'
+    : 'כאן ההנחה לגבי אחד הפרמטרים שגויה.' });
+  const allBlack = cloneState(initialState); zones.forEach(z => findZone(allBlack,z.id).value=[0,0,0]);
+  wrongCandidates.push({ option: makeImageOption(allBlack), why:
+    variant==='V0' ? 'זו למעשה התשובה הנכונה — נסו שוב.'
+    : 'שחור מוחלט מתקבל רק כש-V=0 בכל האזורים; כאן זה לא המקרה.' });
+  const allWhite = cloneState(initialState); zones.forEach(z => findZone(allWhite,z.id).value=[1,1,1]);
+  wrongCandidates.push({ option: makeImageOption(allWhite), why:'לבן מלא מתקבל רק כש-S=0 וגם V=1 בו-זמנית בכל האזורים — זה לא המקרה כאן.' });
+  const grayByHue = cloneState(initialState); zones.forEach((z,i) => { const g=hues[i]; findZone(grayByHue,z.id).value=[g,g,g]; });
+  wrongCandidates.push({ option: makeImageOption(grayByHue), why:'כאן רמת האפור מבולבלת עם ערך הגוון H — בפועל רמת האפור נקבעת רק לפי V.' });
+
+  const whyCorrect = variant==='V0' ? 'V=0 בכל האזורים ⇒ hsv2rgb מחזיר (0,0,0) שחור בכל מקום, בלי קשר להבדלים בגוון H.'
+    : variant==='S0' ? 'S=0 בכל האזורים ⇒ אין רוויה, כל אזור הופך לגוון אפור ברמה שנקבעת רק לפי V שלו (H לא משפיע).'
+    : 'S=1,V=1 בכל האזורים ⇒ כל אזור מקבל את הצבע הרווי והבהיר של הגוון H שלו.';
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates, whyCorrect);
+  return {
+    id:'G5-'+variant+'-'+layoutId+'-'+Math.random().toString(36).slice(2,7), tier:3, family:'G5',
+    promptHe: variant==='V0' ? 'בכל אזורי התמונה נקבע V=0 (אף שה-H שונה בין האזורים). מה imshow(hsv2rgb(img)) יציג?'
+      : variant==='S0' ? 'בכל אזורי התמונה נקבע S=0 (אף שה-H שונה בין האזורים). מה imshow(hsv2rgb(img)) יציג?'
+      : 'לכל אזור נקבע גוון H שונה, עם S=1,V=1. מה imshow(hsv2rgb(img)) יציג?',
+    lines, initialState, showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G6: multi-line code -> final image ---- */
+function genG6(hard){
+  const layoutId = hard ? choice(['quad','hsplit3']) : choice(['hsplit2','vsplit2']);
+  const H = hard?240:200, W = hard?240:200;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const useScale = !!hard && Math.random() < 0.6;
+  const lines = [ lineZeros(H,W) ];
+  const assignIdxs = [];
+  zones.forEach(z => {
+    const nCh = Math.random() < 0.3 ? 2 : 1;
+    const chs = sampleN([0,1,2], nCh);
+    chs.forEach(ch => {
+      const rawVal = useScale ? 200 : 1;
+      lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, rawVal, z.id));
+      assignIdxs.push(lines.length-1);
+    });
+  });
+  if (useScale) lines.push(lineScale('/255', 1/255, 'כל הערכים בתמונה מחולקים ב-255 כדי לעבור מטווח 0–255 לטווח 0–1.'));
+  lines.push(lineImshow('img'));
+
+  const initialState = makeState(layoutId,H,W);
+  const correctState = computeFinalState(initialState, lines);
+
+  const wrongCandidates = [];
+  if (useScale){
+    const noScale = lines.filter(l => !l.code.includes('/255'));
+    const st = computeFinalState(initialState, noScale);
+    if (!statesVisuallyEqual(st, correctState)) wrongCandidates.push({ option: makeImageOption(st), why:'כאן שכחו את img = img/255: הערך 200 לא מנורמל, ונחתך (clip) ל-1 המלא בכל ערוץ שהוגדר — בהיר/רווי מדי לעומת התוצאה המנורמלת הנכונה.' });
+  }
+  { const st = swapRBState(correctState);
+    if (!statesVisuallyEqual(st, correctState)) wrongCandidates.push({ option: makeImageOption(st), why:'כאן הערוצים האדום והכחול הוחלפו — בדקו שוב איזה אינדקס (1, 2 או 3) שייך לאיזה ערוץ בקוד.' }); }
+  { const st = rotateZonesState(correctState);
+    if (!statesVisuallyEqual(st, correctState)) wrongCandidates.push({ option: makeImageOption(st), why:'כאן הצבעים "זזו" לאזור הלא נכון — בדקו שוב איזה טווח שורות/עמודות שייך לאיזה אזור בתמונה.' }); }
+  if (assignIdxs.length > 0){
+    const st = skipLastAssign(lines, assignIdxs, initialState);
+    if (st && !statesVisuallyEqual(st, correctState)) wrongCandidates.push({ option: makeImageOption(st), why:'כאן חסרה ההשפעה של שורת ההשמה האחרונה — כאילו היא לא רצה בכלל.' });
+  }
+  while (wrongCandidates.length < 3){
+    const st = cloneState(correctState);
+    st.zones[randInt(st.zones.length)].value = [Math.random(),Math.random(),Math.random()];
+    if (!statesVisuallyEqual(st, correctState)) wrongCandidates.push({ option: makeImageOption(st), why:'שימו לב לצבע/עוצמה של אחד האזורים — הוא לא תואם למה שהקוד בפועל מגדיר.' });
+  }
+  const whyCorrect = 'זו התוצאה המדויקת של הרצת כל השורות ברצף: ' + zones.map(z => `${ZONE_HE[z.id]}→(${findZone(correctState,z.id).value.map(v=>fmt3(clip01(v))).join(',')})`).join(', ') + '.';
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates, whyCorrect);
+  return {
+    id:'G6-'+(hard?'H':'E')+'-'+layoutId+'-'+Math.random().toString(36).slice(2,7), tier: hard?4:3, family:'G6',
+    promptHe:'עוקבים אחרי הקוד הבא שורה-שורה. איזו תמונה תתקבל בסוף?',
+    lines, initialState, showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G7: which zone/channel changes on a given line ---- */
+function genG7(){
+  const layoutId = choice(['hsplit2','vsplit2','hsplit3','quad']);
+  const H=160,W=160;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const nLines = Math.min(zones.length, 2+randInt(2));
+  const chosenZones = sampleN(zones, nLines);
+  const lines = [ lineZeros(H,W) ];
+  const meta = [];
+  chosenZones.forEach(z => {
+    const ch = randInt(3);
+    lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, 1, z.id));
+    meta.push({ zoneId:z.id, ch });
+  });
+  const targetIdx = 1 + randInt(meta.length);
+  const target = meta[targetIdx-1];
+  const correctLabel = `${ZONE_HE[target.zoneId]}, ערוץ ${chHe(target.ch)}`;
+  const wrongPool = [];
+  zones.forEach(z => [0,1,2].forEach(ch => {
+    if (z.id===target.zoneId && ch===target.ch) return;
+    wrongPool.push(`${ZONE_HE[z.id]}, ערוץ ${chHe(ch)}`);
+  }));
+  const wrongLabels = sampleN([...new Set(wrongPool)], 3);
+  const wrongs = wrongLabels.map(lbl => ({ option: makeTextOption(lbl),
+    why:`השורה המסומנת מתייחסת ל-${correctLabel} — לא ל-${lbl}. שימו לב לטווח השורות/עמודות ולאינדקס הערוץ (1=R, 2=G, 3=B).` }));
+  const fin = finalizeOptions(makeTextOption(correctLabel), wrongs,
+    `בשורה המסומנת, האינדקס האחרון בסוגריים (${target.ch+1}) הוא ערוץ ${chHe(target.ch)}, וטווח האינדקסים שלפניו מתאר את ${ZONE_HE[target.zoneId]}.`);
+  return {
+    id:'G7-'+layoutId+'-'+targetIdx+'-'+Math.random().toString(36).slice(2,6), tier:1, family:'G7',
+    promptHe:`בקוד הבא, איזה אזור ואיזה ערוץ צבע משתנים בשורה המסומנת (שורה ${targetIdx+1})?`,
+    lines, initialState: makeState(layoutId,H,W), showStepper:false,
+    highlightLine: targetIdx,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G8: imshow directly on an HSV matrix (trap) ---- */
+function genG8(){
+  const layoutId = choice(['hsplit2','vsplit2']);
+  const H=180,W=180;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const colors = sampleN(PURE_COLORS.filter(c => !triEq(c.rgb,[0,0,0]) && !triEq(c.rgb,[1,1,1])), zones.length);
+  const lines = [ lineZeros(H,W) ];
+  zones.forEach((z,i) => [0,1,2].forEach(ch => { if (colors[i].rgb[ch]!==0) lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, colors[i].rgb[ch], z.id)); }));
+  const preConvertLines = lines.slice();
+  lines.push(lineConvert('hsvImg','img','rgb2hsv'));
+  lines.push({ code:'imshow(hsvImg);', apply:()=>{}, noteHe:'imshow מצייר את שלושת המספרים של hsvImg כאילו הם R,G,B — למרות שהם בעצם H,S,V!' });
+
+  const initialState = makeState(layoutId,H,W);
+  const rgbState = computeFinalState(initialState, preConvertLines);
+  const hsvState = computeFinalState(initialState, lines.slice(0,-1));
+  const correctState = hsvState;
+
+  const backConverted = cloneState(hsvState); opConvertAll(backConverted,'hsv2rgb');
+  const allBlack = cloneState(initialState); allBlack.zones.forEach(z => z.value=[0,0,0]);
+  const wrongCandidates = [
+    { option: makeImageOption(rgbState), why:'זו התמונה הנכונה אם היו קוראים imshow(img) לפני ההמרה — אבל כאן קוראים imshow(hsvImg), אחרי rgb2hsv.' },
+    { option: makeImageOption(backConverted), why:'זו התוצאה הנכונה רק אם היו ממירים בחזרה עם hsv2rgb(hsvImg) לפני imshow — וזה לא קורה בקוד הזה.' },
+    { option: makeImageOption(allBlack), why:'התמונה לא שחורה — imshow עדיין מצייר את המספרים שיש ב-hsvImg, הם פשוט לא מתפרשים נכון כצבע.' },
+  ];
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates,
+    'rgb2hsv רק מחשב שלושה מספרים חדשים (H,S,V) ושומר אותם באותה צורת מטריצה. imshow לא "יודע" שזו HSV — הוא פשוט מצייר את שלושת המספרים כ-R,G,B, ולכן מתקבלים צבעים שגויים/מוזרים.');
+  return {
+    id:'G8-'+layoutId+'-'+Math.random().toString(36).slice(2,6), tier:3, family:'G8',
+    promptHe:'ממירים את img ל-HSV אך שוכחים להמיר בחזרה, וקוראים ל-imshow ישירות על תוצאת rgb2hsv. מה יוצג בפועל?',
+    lines, initialState, showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G9: nested conversions (identity round-trip) ---- */
+function genG9(){
+  const layoutId = choice(['hsplit2','vsplit2']);
+  const H=180,W=180;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const colors = sampleN(PURE_COLORS.filter(c => !triEq(c.rgb,[0,0,0])), zones.length);
+  const lines = [ lineZeros(H,W) ];
+  zones.forEach((z,i) => [0,1,2].forEach(ch => { if (colors[i].rgb[ch]!==0) lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, colors[i].rgb[ch], z.id)); }));
+  lines.push(lineConvert('a','img','rgb2hsv'));
+  lines.push(lineConvert('b','a','hsv2rgb'));
+  lines.push(lineImshow('b'));
+
+  const initialState = makeState(layoutId,H,W);
+  const correctState = computeFinalState(initialState, lines);
+  const allBlack = cloneState(initialState); allBlack.zones.forEach(z => z.value=[0,0,0]);
+  const inverted = cloneState(correctState); inverted.zones.forEach(z => z.value = z.value.map(v => clip01(1-v)));
+  const wrongCandidates = [
+    { option: makeImageOption(allBlack), why:'זה לא שחור: rgb2hsv ואז hsv2rgb הן שתי המרות הפוכות זו לזו — על צבע תקין (לא שחור) הן "מבטלות" זו את זו ומחזירות בקירוב את הצבע המקורי.' },
+    { option: makeImageOption(rotateZonesState(correctState)), why:'ההמרות לא מזיזות צבעים בין אזורי התמונה — כל פיקסל מומר בנפרד ונשאר במקומו.' },
+    { option: makeImageOption(inverted), why:'ההמרות לא "הופכות" צבעים כמו נגטיב — rgb2hsv ואז hsv2rgb על אותו פיקסל מחזירות בקירוב את הצבע המקורי, לא את המשלים שלו.' },
+  ];
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates,
+    'rgb2hsv ו-hsv2rgb הן פעולות הפוכות זו לזו. כשמפעילים אותן ברצף על אותה תמונה תקינה, מקבלים בחזרה (בקירוב) בדיוק את התמונה המקורית.');
+  return {
+    id:'G9-'+layoutId+'-'+Math.random().toString(36).slice(2,6), tier:4, family:'G9',
+    promptHe:'הקוד ממיר את img מ-RGB ל-HSV, ומיד אחר כך ממיר את התוצאה בחזרה מ-HSV ל-RGB, ומציג אותה. מה יוצג?',
+    lines, initialState, showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G9-trap: the classic rgb2hsv(hsv2rgb(img/255)) example ---- */
+function genG9trap(){
+  const H=200,W=400;
+  const layoutId='hsplit2';
+  const initialState = makeState(layoutId,H,W);
+  const displayLines = [
+    { code:'img = zeros(200,400,3);', apply:()=>{}, noteHe:`נוצרת מטריצה בגודל ${H}×${W}×3 המלאה באפסים — תמונה שחורה לגמרי.` },
+    { code:'img(1:100,:,1) = 255;', apply:(s)=>opAssign(s,'top',0,255), noteHe:'הערוץ האדום של החצי העליון מקבל 255 (טווח לא מנורמל, 0–255).' },
+    { code:'img(101:200,:,2) = 255;', apply:(s)=>opAssign(s,'bottom',1,255), noteHe:'הערוץ הירוק של החצי התחתון מקבל 255.' },
+    { code:'res = rgb2hsv(hsv2rgb(img/255));', apply:(s)=>{ opScaleAll(s,1/255); opConvertAll(s,'hsv2rgb'); opConvertAll(s,'rgb2hsv'); },
+      noteHe:'img/255 מנרמל ל-(1,0,0) ו-(0,1,0) — ערכי RGB תקינים. אבל הקוד מזין אותם ל-hsv2rgb כאילו הם כבר HSV! הרכיב השלישי (המקורי היה הכחול, וכעת מתפרש כ-V) הוא 0 בשני האזורים — ולכן hsv2rgb עם V=0 מחזיר שחור, בלי קשר ל-H,S. rgb2hsv על שחור נשאר שחור.' },
+    { code:'imshow(res);', apply:()=>{}, noteHe:'מוצגת תמונה שחורה לגמרי.' },
+  ];
+  const correctState = computeFinalState(initialState, displayLines);
+  const asIf = cloneState(initialState); findZone(asIf,'top').value=[1,0,0]; findZone(asIf,'bottom').value=[0,1,0];
+  const white = cloneState(initialState); white.zones.forEach(z => z.value=[1,1,1]);
+  const swapped = cloneState(initialState); findZone(swapped,'top').value=[0,1,0]; findZone(swapped,'bottom').value=[1,0,0];
+  const wrongCandidates = [
+    { option: makeImageOption(asIf), why:'זו התוצאה אם res היה פשוט img/255 (אדום למעלה, ירוק למטה) — אבל כאן מפעילים גם hsv2rgb וגם rgb2hsv על הערכים האלה, לא מציגים אותם ישירות.' },
+    { option: makeImageOption(white), why:'התמונה לא לבנה — אין כאן שום אזור עם V=1; הרכיב השלישי (שמתפרש כ-V) הוא 0 בשני האזורים.' },
+    { option: makeImageOption(swapped), why:'זה נראה כמו החלפה בין האזורים, אך זה לא מדויק — שני האזורים בפועל הופכים לשחור, לא רק מתחלפים ביניהם.' },
+  ];
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates,
+    'img/255 נותן ערכי RGB תקינים: (1,0,0) למעלה ו-(0,1,0) למטה. אבל hsv2rgb מצפה לקבל (H,S,V) — הוא "לא יודע" שהמספרים האלה בעצם RGB. הרכיב השלישי (הכחול המקורי, כעת מתפרש כ-V) הוא 0 בשני האזורים, אז hsv2rgb מחזיר שחור מוחלט בשניהם (V=0 ⇒ שחור, בלי קשר ל-H,S). rgb2hsv על שחור נשאר שחור. התוצאה הסופית: תמונה שחורה לגמרי.');
+  return {
+    id:'G9-trap-classic', tier:4, family:'G9', showcase:true,
+    promptHe:'קטע הקוד הקלאסי — עוקבים שורה-שורה: מה יוצג בסוף?',
+    lines: displayLines, initialState, showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G10: complete a missing line of code ---- */
+function genG10(){
+  const layoutId = choice(['hsplit2','vsplit2']);
+  const H=160,W=160;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const AXIS_COLORS = PURE_COLORS.filter(c => c.rgb.filter(v=>v!==0).length===1);
+  const blankZoneIdx = randInt(2);
+  const blankColor = choice(AXIS_COLORS);
+  const otherColor = choice(PURE_COLORS.filter(c => !triEq(c.rgb,[0,0,0])));
+  const colors = blankZoneIdx===0 ? [blankColor, otherColor] : [otherColor, blankColor];
+  const blankZone = zones[blankZoneIdx];
+  const missingCh = blankColor.rgb.findIndex(v => v!==0);
+
+  const lines = [ lineZeros(H,W) ];
+  zones.forEach((z,i) => { if (i===blankZoneIdx) return; [0,1,2].forEach(ch => { if (colors[i].rgb[ch]!==0) lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, colors[i].rgb[ch], z.id)); }); });
+  const blankApply = (s) => opAssign(s, blankZone.id, missingCh, 1);
+  lines.push({ code:'???', apply: blankApply, noteHe:'זו השורה החסרה.' });
+  lines.push(lineImshow('img'));
+
+  const otherZone = zones[1-blankZoneIdx];
+  const blankLineCode = `img(${zoneIndexExpr(blankZone,null,H,W)},${missingCh+1}) = 1;`;
+  const wrongCh = ((missingCh+1)%3);
+  const wrongCodeCandidates = [
+    { code:`img(${zoneIndexExpr(blankZone,null,H,W)},${wrongCh+1}) = 1;`,
+      why:`שורה זו מדליקה את ערוץ ${chHe(wrongCh)} במקום ${chHe(missingCh)} — צבע לא נכון עבור ${ZONE_HE[blankZone.id]}.` },
+    { code:`img(${zoneIndexExpr(otherZone,null,H,W)},${missingCh+1}) = 1;`,
+      why:`שורה זו פועלת על ${ZONE_HE[otherZone.id]} ולא על ${ZONE_HE[blankZone.id]} — אזור לא נכון.` },
+    { code:`img(${zoneIndexExpr(blankZone,null,H,W)},${missingCh+1}) = 0;`,
+      why:'שורה זו לא משנה כלום בפועל (מגדירה 0, שכבר הערך ההתחלתי) — האזור יישאר שחור.' },
+  ];
+  const wrongs = wrongCodeCandidates.map(c => ({ option: makeTextOption(c.code), why: c.why }));
+  const fin = finalizeOptions(makeTextOption(blankLineCode), wrongs,
+    `כדי ש-${ZONE_HE[blankZone.id]} יהיה ${blankColor.he}, צריך להדליק את ערוץ ${chHe(missingCh)} (אינדקס ${missingCh+1}) באזור הנכון — בדיוק מה ש-${blankLineCode} עושה.`);
+  return {
+    id:'G10-'+layoutId+'-'+Math.random().toString(36).slice(2,6), tier:3, family:'G10',
+    promptHe:`חסרה שורת קוד אחת (מסומנת ???). המטרה: ${ZONE_HE[blankZone.id]} צריך להיות ${blankColor.he}. איזו שורה משלימה את הקוד נכון?`,
+    lines, initialState: makeState(layoutId,H,W), showStepper:false,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G11: find the bug ---- */
+function genG11(){
+  const layoutId = choice(['hsplit2','vsplit2']);
+  const H=160,W=160;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const colors = sampleN(PURE_COLORS.filter(c => c.rgb.filter(v=>v!==0).length===1), 2);
+  const correctLines = [ lineZeros(H,W) ];
+  zones.forEach((z,i) => { const ch = colors[i].rgb.findIndex(v=>v!==0); correctLines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, 1, z.id)); });
+  correctLines.push(lineImshow('img'));
+  const intendedText = `המטרה: ${ZONE_HE[zones[0].id]} = ${colors[0].he}, ${ZONE_HE[zones[1].id]} = ${colors[1].he}.`;
+
+  const bugType = choice(['wrongChannel','wrongZone','imshowOnHsv','weakValue']);
+  let buggyLines = correctLines.map(l => ({...l}));
+  let bugLineIdx, bugExplain;
+  if (bugType==='wrongChannel'){
+    bugLineIdx = 1 + randInt(2);
+    const z = zones[bugLineIdx-1];
+    const correctCh = colors[bugLineIdx-1].rgb.findIndex(v=>v!==0);
+    const wrongCh = (correctCh+1)%3;
+    buggyLines[bugLineIdx] = lineAssign(zoneIndexExpr(z,null,H,W), wrongCh, 1, z.id);
+    bugExplain = `אינדקס הערוץ שגוי: כתוב ${wrongCh+1} (${chHe(wrongCh)}) במקום ${correctCh+1} (${chHe(correctCh)}).`;
+  } else if (bugType==='wrongZone'){
+    bugLineIdx = 1 + randInt(2);
+    const otherZone = zones[1-(bugLineIdx-1)];
+    const correctCh = colors[bugLineIdx-1].rgb.findIndex(v=>v!==0);
+    buggyLines[bugLineIdx] = lineAssign(zoneIndexExpr(otherZone,null,H,W), correctCh, 1, otherZone.id);
+    bugExplain = `טווח האינדקסים (השורות/העמודות) מצביע על ${ZONE_HE[otherZone.id]} במקום ${ZONE_HE[zones[bugLineIdx-1].id]}.`;
+  } else if (bugType==='imshowOnHsv'){
+    buggyLines.splice(buggyLines.length-1, 0, lineConvert('img','img','rgb2hsv'));
+    bugLineIdx = buggyLines.length-2;
+    bugExplain = 'הוספה המרה rgb2hsv בלי להמיר בחזרה עם hsv2rgb לפני imshow — הצבעים המוצגים לא יהיו הצבעים המקוריים.';
+  } else {
+    bugLineIdx = 1 + randInt(2);
+    const z = zones[bugLineIdx-1];
+    const correctCh = colors[bugLineIdx-1].rgb.findIndex(v=>v!==0);
+    buggyLines[bugLineIdx] = lineAssign(zoneIndexExpr(z,null,H,W), correctCh, 0.4, z.id);
+    bugExplain = 'הערך שהוגדר (0.4) חלש מדי לעומת הכוונה (1) — האזור ייצא כהה/מעומעם ולא בצבע המלא.';
+  }
+  const bugLineNumberDisplay = bugLineIdx+1;
+  const wrongLineNumbers = [1,2,3,4,5].filter(n => n!==bugLineNumberDisplay && n<=buggyLines.length);
+  const wrongOpts = sampleN(wrongLineNumbers,3).map(n => ({
+    option: makeTextOption(`שורה ${n}: ${buggyLines[n-1].code}`),
+    why: `השורה הזו תקינה ותואמת את הכוונה (${intendedText}); הבאג נמצא בשורה אחרת.`,
+  }));
+  const fin = finalizeOptions(
+    makeTextOption(`שורה ${bugLineNumberDisplay}: ${buggyLines[bugLineIdx].code}`),
+    wrongOpts,
+    `${bugExplain} ${intendedText}`
+  );
+  return {
+    id:'G11-'+bugType+'-'+Math.random().toString(36).slice(2,6), tier:4, family:'G11',
+    promptHe:`${intendedText} אבל יש טעות אחת בקוד. איזו שורה שגויה?`,
+    lines: buggyLines, initialState: makeState(layoutId,H,W), showStepper:true,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G12: is the matrix RGB or HSV at this point? ---- */
+function genG12(){
+  const layoutId = choice(['hsplit2','vsplit2','full']);
+  const H=140,W=140;
+  const zones = makeLayouts(H,W)[layoutId].zones;
+  const lines = [ lineZeros(H,W) ];
+  zones.forEach(z => { const ch = randInt(3); lines.push(lineAssign(zoneIndexExpr(z,null,H,W), ch, 1, z.id)); });
+  const willConvert = Math.random() < 0.66;
+  let answerSpace = 'RGB';
+  if (willConvert){
+    const dir = choice(['rgb2hsv','hsv2rgb']);
+    lines.push(lineConvert('img','img', dir));
+    answerSpace = dir==='rgb2hsv' ? 'HSV' : 'RGB';
+  }
+  const initialState = makeState(layoutId,H,W);
+  const labelOptions = [
+    { label:'RGB', correct: answerSpace==='RGB' },
+    { label:'HSV', correct: answerSpace==='HSV' },
+    { label:'לא ניתן לדעת בלי להריץ את הקוד בפועל', correct:false },
+    { label:'תמיד HSV אחרי כל השמה למטריצה', correct:false },
+  ];
+  const correctLabel = labelOptions.find(o => o.correct).label;
+  const wrongs = labelOptions.filter(o => !o.correct).map(o => ({
+    option: makeTextOption(o.label),
+    why: o.label==='RGB' ? 'המטריצה כבר עברה rgb2hsv בקוד — המספרים בה כרגע הם (H,S,V), לא (R,G,B).'
+       : o.label==='HSV' ? (willConvert ? 'המטריצה עברה hsv2rgb, כך שהמספרים בה מוגדרים כ-(R,G,B) — גם אם לא היו HSV "אמיתיים" קודם.' : 'עדיין לא בוצעה שום המרה בקוד — img נשאר במרחב RGB, בדיוק כפי שהוגדר ישירות.')
+       : 'תמיד אפשר לדעת: פשוט עוקבים אחרי הקריאות ל-rgb2hsv/hsv2rgb בקוד עד לנקודה המבוקשת.',
+  }));
+  const fin = finalizeOptions(makeTextOption(correctLabel), wrongs,
+    willConvert ? `הקריאה האחרונה הרלוונטית היא ${lines[lines.length-1].code} — היא קובעת שהמטריצה כרגע נחשבת ${correctLabel}.` : 'לא בוצעה שום קריאה ל-rgb2hsv/hsv2rgb, ולכן המטריצה נשארת RGB (כפי שהוגדרה ישירות עם ערכי 0/1).');
+  return {
+    id:'G12-'+layoutId+'-'+willConvert+'-'+Math.random().toString(36).slice(2,6), tier:2, family:'G12',
+    promptHe:'לאחר הרצת כל השורות שלמעלה — האם img נחשבת כרגע כמטריצת RGB או HSV?',
+    lines, initialState, showStepper:true,
+    answerType:'text', ...fin,
+  };
+}
+
+/* ---- G13: mixing two channels on the same zone ---- */
+function genG13(){
+  const chPair = choice([[0,1],[0,2],[1,2]]);
+  const H=40,W=40;
+  const lines = [ lineZeros(H,W), lineAssign(':,:', chPair[0], 1, 'all'), lineAssign(':,:', chPair[1], 1, 'all'), lineImshow('img') ];
+  const correctState = computeFinalState(makeState('full',H,W), lines);
+  const name = colorNameOf(findZone(correctState,'all').value) || 'צבע מעורב';
+  const otherPairs = [[0,1],[0,2],[1,2]].filter(p => p.join()!==chPair.join());
+  const wrongCandidates = otherPairs.map(p => {
+    const s2 = makeState('full',H,W); p.forEach(ch => findZone(s2,'all').value[ch]=1);
+    return { option: makeImageOption(s2), why:`זה מה שמתקבל מ-${chHe(p[0])}+${chHe(p[1])}, לא מ-${chHe(chPair[0])}+${chHe(chPair[1])}.` };
+  });
+  const singleCh = makeState('full',H,W); findZone(singleCh,'all').value[chPair[0]]=1;
+  wrongCandidates.push({ option: makeImageOption(singleCh), why:`זה רק הערוץ ${chHe(chPair[0])} לבד — בקוד שני הערוצים (${chHe(chPair[0])} וגם ${chHe(chPair[1])}) מודלקים יחד.` });
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates,
+    `כשגם ${chHe(chPair[0])} וגם ${chHe(chPair[1])} מלאים (=1) והערוץ השלישי כבוי, מתקבל ${name}.`);
+  return {
+    id:'G13-'+chPair.join('')+'-'+Math.random().toString(36).slice(2,6), tier:1, family:'G13',
+    promptHe:'שני ערוצי צבע מודלקים על אותו אזור. איזה צבע מתקבל?',
+    lines, initialState: makeState('full',H,W), showStepper:true,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- G14: 0-255 values without dividing by 255 (trap) ---- */
+function genG14(){
+  const H=40,W=40;
+  const val = choice([180,200,220,255]);
+  const lines = [
+    { code:`img = ones(${H},${W},3) * ${val};`, apply:(s) => s.zones.forEach(z => z.value=[val,val,val]), noteHe:`כל שלושת הערוצים בכל התמונה מקבלים את הערך ${val} (טווח לא מנורמל, 0–255).` },
+    lineImshow('img'),
+  ];
+  const initialState = makeState('full',H,W);
+  const correctState = computeFinalState(initialState, lines);
+  const grayGuess = makeState('full',H,W); findZone(grayGuess,'all').value=[val/255,val/255,val/255];
+  const blackGuess = makeState('full',H,W);
+  const midGray = makeState('full',H,W); findZone(midGray,'all').value=[0.5,0.5,0.5];
+  const wrongCandidates = [
+    { option: makeImageOption(grayGuess), why:`imshow לא מנרמל אוטומטית ערכי double — הוא רק חותך (clip) כל ערך מעל 1 ל-1. בלי /255 בקוד, הערך ${val} נחתך ל-1 בכל ערוץ, ולא הופך ל-${fmt3(val/255)}.` },
+    { option: makeImageOption(blackGuess), why:'ערכים גבוהים לא נחתכים לכיוון 0 — clip פועל כלפי מעלה אל 1, לא כלפי מטה.' },
+    { option: makeImageOption(midGray), why:'אין סיבה לקבל אפור באמצע הטווח — שלושת הערוצים שווים ומעל 1, ולכן כולם נחתכים ל-1: לבן.' },
+  ];
+  const fin = finalizeOptions(makeImageOption(correctState), wrongCandidates,
+    `img מכיל את הערך ${val} בכל שלושת הערוצים. imshow על מטריצת double חותך (clip) כל ערך שמעל 1 ל-1 (ולא מנרמל!) — ולכן שלושת הערוצים הופכים ל-1,1,1 = לבן, למרות שכנראה התכוונו לצבע אחר.`);
+  return {
+    id:'G14-'+val, tier:2, family:'G14',
+    promptHe:'הקוד יוצר תמונה עם ערכים לא מנורמלים (0–255) ומציג אותה מיד, בלי לחלק ב-255. מה יוצג בפועל?',
+    lines, initialState, showStepper:false,
+    answerType:'image', ...fin,
+  };
+}
+
+/* ---- registry ---- */
+const FAMILY_META = {
+  G1:{he:'זיהוי צבע לפי RGB', gens:[genG1]},
+  G2:{he:'זיהוי RGB לפי צבע', gens:[genG2]},
+  G3:{he:'rgb2hsv על צבע טהור', gens:[genG3]},
+  G4:{he:'hsv2rgb ומקרי קצה (S=0/V=0/V=1)', gens:[genG4]},
+  G5:{he:'השפעת V=0/S=0/V=1 על תמונה שלמה', gens:[genG5]},
+  G6:{he:'מעקב קוד רב-שורות ותמונת פלט', gens:[()=>genG6(false), ()=>genG6(true)]},
+  G7:{he:'איזה אזור/ערוץ משתנה בשורה', gens:[genG7]},
+  G8:{he:'מלכודת: imshow על מטריצת HSV', gens:[genG8]},
+  G9:{he:'המרות מקוננות rgb2hsv/hsv2rgb', gens:[genG9, genG9trap]},
+  G10:{he:'השלמת שורת קוד חסרה', gens:[genG10]},
+  G11:{he:'מציאת הטעות בקוד', gens:[genG11]},
+  G12:{he:'RGB או HSV בנקודה זו בקוד?', gens:[genG12]},
+  G13:{he:'ערבוב ערוצי צבע', gens:[genG13]},
+  G14:{he:'מלכודת: 0–255 בלי חלוקה ב-255', gens:[genG14]},
+};
+const ALL_FAMILIES = Object.keys(FAMILY_META);
+const TIER_FAMILIES = {
+  1: ['G1','G2','G7','G13'],
+  2: ['G3','G4','G12','G14'],
+  3: ['G5','G6','G8','G10'],
+  4: ['G9','G11'],
+};
+
+function generateOne(family){ return choice(FAMILY_META[family].gens)(); }
+function generateQuestion(familyPool, avoidIds, maxTries){
+  maxTries = maxTries || 12;
+  for (let i=0;i<maxTries;i++){
+    const q = generateOne(choice(familyPool));
+    if (!avoidIds.has(q.id)) return q;
+  }
+  return generateOne(choice(familyPool));
+}
+
+/* =========================================================================
+   5. GAME ENGINE + UI WIRING
+   ========================================================================= */
+const QUESTIONS_PER_TIER = 6, TRAINING_LENGTH = 15;
+const G = {
+  mode:null, seq:[], idx:0, score:0, streak:0, lives:3, maxLives:3,
+  answered:false, stepPos:0, helpRevealed:false, history:[], chosenFamilies:[],
+};
+
+function computeStateAtStep(q, uptoIdx){
+  let s = cloneState(q.initialState);
+  for (let i=0;i<=uptoIdx && i<q.lines.length;i++) q.lines[i].apply(s);
+  return s;
+}
+function buildSequence(mode, families){
+  const seq = [];
+  const avoid = new Set();
+  if (mode === 'game'){
+    for (let t=1;t<=4;t++){
+      for (let i=0;i<QUESTIONS_PER_TIER;i++){
+        const q = generateQuestion(TIER_FAMILIES[t], avoid);
+        q.tier = t;
+        avoid.add(q.id);
+        seq.push(q);
+      }
+    }
+  } else {
+    const fams = (families && families.length) ? families : ALL_FAMILIES;
+    for (let i=0;i<TRAINING_LENGTH;i++){
+      const q = generateQuestion(fams, avoid);
+      avoid.add(q.id);
+      seq.push(q);
+    }
+  }
+  return seq;
+}
+
+function showScreen(name){
+  ['start','topics','play','lab','end'].forEach(s => document.getElementById('screen-'+s).classList.toggle('hidden', s!==name));
+  document.getElementById('hud').classList.toggle('hidden', name!=='play');
+  document.getElementById('progress-wrap').classList.toggle('hidden', name!=='play');
+  if (name === 'start') refreshBestScore();
+}
+function refreshBestScore(){
+  const best = Number(localStorage.getItem('rgbhsv_best') || 0);
+  document.getElementById('best-score').textContent = best>0 ? `🏆 השיא שלכם: ${best} נקודות` : '';
+}
+
+function startRun(mode, families){
+  G.mode = mode; G.idx = 0; G.score = 0; G.streak = 0; G.lives = 3; G.history = [];
+  G.chosenFamilies = families || [];
+  G.seq = buildSequence(mode, families);
+  showScreen('play');
+  startQuestion();
+}
+function startQuestion(){
+  G.answered = false; G.stepPos = 0; G.helpRevealed = false;
+  const exp = document.getElementById('explain');
+  exp.classList.remove('show'); exp.innerHTML = '';
+  document.getElementById('btn-next-q').classList.add('hidden');
+  renderQuestionView();
+  updateHud();
+  renderProgress();
+}
+function renderQuestionView(){
+  const q = G.seq[G.idx];
+  const tag = document.getElementById('q-tag');
+  tag.textContent = `שלב ${q.tier}`;
+  tag.className = 'tag tier'+q.tier;
+  document.getElementById('q-count').textContent = `שאלה ${G.idx+1} / ${G.seq.length}`;
+  document.getElementById('q-prompt').textContent = q.promptHe + (q.showcase ? ' ⭐' : '');
+  document.querySelector('#screen-play .split').style.gridTemplateColumns = q.showStepper ? '' : '1fr';
+  document.querySelector('#screen-play .imgbox').classList.toggle('hidden', !q.showStepper);
+  const helpBtn = document.getElementById('btn-help-stepper');
+  helpBtn.classList.toggle('hidden', !(q.showStepper && G.mode==='game' && !G.helpRevealed));
+  renderStepperUI();
+  renderOptions();
+}
+function renderStepperUI(){
+  const q = G.seq[G.idx];
+  const controlsVisible = q.showStepper && (G.mode!=='game' || G.answered || G.helpRevealed);
+  document.getElementById('stepper').classList.toggle('hidden', !controlsVisible);
+  const st = computeStateAtStep(q, G.stepPos);
+  if (q.showStepper) renderState(document.getElementById('live-canvas'), st);
+  document.getElementById('step-pos').textContent = `${Math.min(G.stepPos,q.lines.length-1)+1} / ${q.lines.length}`;
+  document.getElementById('step-note').textContent = (controlsVisible && q.lines[G.stepPos]) ? q.lines[G.stepPos].noteHe : '';
+  const activeForCode = controlsVisible ? G.stepPos : (q.highlightLine !== undefined ? q.highlightLine : undefined);
+  renderCode(document.getElementById('code-pre'), q.lines, activeForCode, q.lines.findIndex(l => l.code==='???'));
+  document.getElementById('space-tag').textContent = q.showStepper ? (st.space==='hsv' ? 'מרחב נוכחי: HSV' : 'מרחב נוכחי: RGB') : '';
+}
+function renderOptions(){
+  const q = G.seq[G.idx];
+  const wrap = document.getElementById('options');
+  wrap.innerHTML = '';
+  q.options.forEach((opt,i) => {
+    const btn = document.createElement('button');
+    btn.className = 'opt';
+    const lbl = document.createElement('div'); lbl.className = 'opt-label';
+    lbl.innerHTML = `<span>אפשרות ${String.fromCharCode(65+i)}</span>`;
+    btn.appendChild(lbl);
+    if (opt.kind === 'text'){
+      const t = document.createElement('div'); t.className = 'opt-text code ltr'; t.textContent = opt.label;
+      btn.appendChild(t);
+    } else {
+      const frame = document.createElement('div'); frame.className = 'mini-frame';
+      const canvas = document.createElement('div'); canvas.className = 'canvas';
+      frame.appendChild(canvas); btn.appendChild(frame);
+      renderState(canvas, opt.state);
+    }
+    btn.addEventListener('click', () => handleAnswer(i));
+    wrap.appendChild(btn);
+  });
+}
+function handleAnswer(i){
+  if (G.answered) return;
+  G.answered = true;
+  const q = G.seq[G.idx];
+  const correct = i === q.correctIndex;
+  const buttons = [...document.querySelectorAll('#options .opt')];
+  buttons.forEach((b,bi) => {
+    b.classList.add('locked');
+    if (bi === q.correctIndex) b.classList.add(bi===i && correct ? 'correct' : 'reveal-correct');
+    if (bi === i && !correct) b.classList.add('wrong');
+  });
+
+  if (correct){
+    G.streak++;
+    G.score += 100*q.tier + Math.min(G.streak-1,4)*25;
+  } else {
+    G.streak = 0;
+    if (G.mode === 'game') G.lives--;
+  }
+  G.history.push({ family:q.family, correct });
+
+  const exp = document.getElementById('explain');
+  exp.classList.add('show'); exp.innerHTML = '';
+  if (correct){
+    exp.innerHTML = `<div class="h-correct">✅ נכון!</div><div class="body"></div>`;
+    exp.querySelector('.body').textContent = q.whyCorrectHe;
+  } else {
+    exp.innerHTML = `<div class="h-wrong">❌ לא מדויק</div><div class="body"></div><div class="h-correct" style="margin-top:10px">התשובה הנכונה:</div><div class="body"></div>`;
+    const bodies = exp.querySelectorAll('.body');
+    bodies[0].textContent = q.whyWrongHe[i];
+    bodies[1].textContent = q.whyCorrectHe;
+  }
+
+  document.getElementById('btn-help-stepper').classList.add('hidden');
+  G.stepPos = q.lines.length-1;
+  renderStepperUI();
+  updateHud();
+  renderProgress();
+
+  const nextBtn = document.getElementById('btn-next-q');
+  nextBtn.classList.remove('hidden');
+  nextBtn.textContent = (G.mode==='game' && G.lives<=0) ? 'סיום ▶' : 'השאלה הבאה ▶';
+}
+function goNext(){
+  if (G.mode === 'game' && G.lives <= 0) return endGame();
+  G.idx++;
+  if (G.idx >= G.seq.length) return endGame();
+  startQuestion();
+}
+function updateHud(){
+  document.getElementById('hud-score').textContent = G.score;
+  document.getElementById('hud-streak').textContent = G.streak;
+  document.getElementById('hud-tier').textContent = G.seq[G.idx] ? G.seq[G.idx].tier : '-';
+  const heartsEl = document.getElementById('hud-lives');
+  if (G.mode === 'game'){
+    heartsEl.innerHTML = Array.from({length:G.maxLives}).map((_,i) => i<G.lives ? '❤' : '<span class="heart-lost">❤</span>').join('');
+  } else {
+    heartsEl.textContent = '∞';
+  }
+}
+function renderProgress(){
+  const wrap = document.getElementById('progress-wrap');
+  wrap.innerHTML = '';
+  G.seq.forEach((q,i) => {
+    const seg = document.createElement('div');
+    seg.className = 'progress-seg';
+    if (i < G.idx || (i===G.idx && G.answered)){
+      const rec = G.history[i];
+      seg.classList.add(rec && rec.correct ? 'done-correct' : 'done-wrong');
+    } else if (i === G.idx){
+      seg.classList.add('current');
+    }
+    wrap.appendChild(seg);
+  });
+}
+function endGame(){
+  const best = Math.max(G.score, Number(localStorage.getItem('rgbhsv_best') || 0));
+  localStorage.setItem('rgbhsv_best', best);
+  document.getElementById('end-score').textContent = G.score;
+  const answeredCount = G.idx + (G.answered ? 1 : 0);
+  document.getElementById('end-sub').textContent = G.mode === 'game'
+    ? (G.lives<=0 ? `נגמרו החיים לאחר ${answeredCount} שאלות. שיא אישי: ${best}` : `סיימתם את כל השאלות! שיא אישי: ${best}`)
+    : `סיימתם את סבב האימון (${answeredCount} שאלות). שיא אישי במשחק: ${best}`;
+
+  const famAgg = {};
+  G.history.forEach(h => { famAgg[h.family] = famAgg[h.family] || {c:0,t:0}; famAgg[h.family].t++; if (h.correct) famAgg[h.family].c++; });
+  const weakWrap = document.getElementById('end-weak');
+  weakWrap.innerHTML = '';
+  const rows = Object.keys(famAgg).map(f => ({ f, pct: famAgg[f].c/famAgg[f].t })).sort((a,b) => a.pct-b.pct);
+  if (rows.length === 0){
+    weakWrap.innerHTML = '<div class="small-muted">אין מספיק נתונים.</div>';
+  } else {
+    rows.forEach(r => {
+      const div = document.createElement('div'); div.className = 'weak-item';
+      const label = document.createElement('span'); label.textContent = FAMILY_META[r.f].he;
+      const barBg = document.createElement('div'); barBg.className = 'bar-bg';
+      const barFill = document.createElement('div'); barFill.className = 'bar-fill'; barFill.style.width = Math.round(r.pct*100)+'%';
+      barBg.appendChild(barFill);
+      const pct = document.createElement('span'); pct.textContent = Math.round(r.pct*100)+'%';
+      div.appendChild(label); div.appendChild(barBg); div.appendChild(pct);
+      weakWrap.appendChild(div);
+    });
+  }
+  showScreen('end');
+}
+
+/* ---- Lab mode ---- */
+let labQ = null, labPos = 0;
+function setupLab(){
+  const sel = document.getElementById('lab-family');
+  sel.innerHTML = ALL_FAMILIES.map(f => `<option value="${f}">${FAMILY_META[f].he}</option>`).join('');
+  labNew();
+}
+function labNew(){
+  const fam = document.getElementById('lab-family').value || ALL_FAMILIES[0];
+  labQ = generateOne(fam);
+  labPos = 0;
+  renderLab();
+}
+function renderLab(){
+  renderCode(document.getElementById('lab-code-pre'), labQ.lines, labPos, labQ.lines.findIndex(l => l.code==='???'));
+  const st = computeStateAtStep(labQ, labPos);
+  renderState(document.getElementById('lab-canvas'), st);
+  document.getElementById('lab-step-pos').textContent = `${labPos+1} / ${labQ.lines.length}`;
+  document.getElementById('lab-step-note').textContent = labQ.lines[labPos] ? labQ.lines[labPos].noteHe : '';
+  document.getElementById('lab-space-tag').textContent = st.space==='hsv' ? 'מרחב נוכחי: HSV' : 'מרחב נוכחי: RGB';
+}
+
+/* ---- wiring ---- */
+document.querySelectorAll('.mode-card').forEach(card => {
+  card.addEventListener('click', () => {
+    const mode = card.dataset.mode;
+    if (mode === 'lab'){ setupLab(); showScreen('lab'); }
+    else if (mode === 'training'){ showTopicsScreen(); }
+    else { startRun('game', []); }
+  });
+});
+function showTopicsScreen(){
+  const list = document.getElementById('topic-list');
+  list.innerHTML = '';
+  ALL_FAMILIES.forEach(f => {
+    const label = document.createElement('label');
+    label.className = 'opt'; label.style.flexDirection = 'row'; label.style.alignItems = 'center'; label.style.gap = '10px'; label.style.cursor = 'pointer';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = f; cb.checked = true;
+    const span = document.createElement('span'); span.className = 'opt-text'; span.textContent = FAMILY_META[f].he;
+    label.appendChild(cb); label.appendChild(span);
+    list.appendChild(label);
+  });
+  showScreen('topics');
+}
+document.getElementById('topics-back').addEventListener('click', () => showScreen('start'));
+document.getElementById('topics-start').addEventListener('click', () => {
+  const chosen = [...document.querySelectorAll('#topic-list input:checked')].map(cb => cb.value);
+  startRun('training', chosen.length ? chosen : ALL_FAMILIES);
+});
+document.getElementById('btn-quit').addEventListener('click', () => {
+  if (confirm('לצאת מהמשחק הנוכחי ולחזור לתפריט הראשי?')) showScreen('start');
+});
+document.getElementById('end-again').addEventListener('click', () => startRun(G.mode, G.chosenFamilies));
+document.getElementById('end-home').addEventListener('click', () => showScreen('start'));
+document.getElementById('btn-next-q').addEventListener('click', goNext);
+document.getElementById('btn-help-stepper').addEventListener('click', () => { G.helpRevealed = true; renderQuestionView(); });
+document.getElementById('step-prev').addEventListener('click', () => { G.stepPos = Math.max(0, G.stepPos-1); renderStepperUI(); });
+document.getElementById('step-next').addEventListener('click', () => { const q=G.seq[G.idx]; G.stepPos = Math.min(q.lines.length-1, G.stepPos+1); renderStepperUI(); });
+document.getElementById('step-reset').addEventListener('click', () => { G.stepPos = 0; renderStepperUI(); });
+document.getElementById('lab-new').addEventListener('click', labNew);
+document.getElementById('lab-family').addEventListener('change', labNew);
+document.getElementById('lab-back').addEventListener('click', () => showScreen('start'));
+document.getElementById('lab-step-prev').addEventListener('click', () => { labPos = Math.max(0, labPos-1); renderLab(); });
+document.getElementById('lab-step-next').addEventListener('click', () => { labPos = Math.min(labQ.lines.length-1, labPos+1); renderLab(); });
+document.getElementById('lab-step-reset').addEventListener('click', () => { labPos = 0; renderLab(); });
+
+showScreen('start');
+
+/* =========================================================================
+   6. SELF-TESTS (run with ?selftest=1)
+   ========================================================================= */
+function runSelfTests(){
+  const results = [];
+  function assert(name, cond){ results.push({ name, pass: !!cond }); }
+
+  const knownRGB = [
+    [[1,0,0],[0,1,1]], [[0,1,0],[1/3,1,1]], [[0,0,1],[2/3,1,1]],
+    [[1,1,0],[1/6,1,1]], [[0,1,1],[0.5,1,1]], [[1,0,1],[5/6,1,1]],
+    [[0,0,0],[0,0,0]], [[1,1,1],[0,0,1]], [[0.5,0.5,0.5],[0,0,0.5]],
+  ];
+  knownRGB.forEach(([rgb,hsv]) => assert(`rgb2hsv(${rgb}) ≈ ${hsv}`, triEq(rgb2hsv(...rgb), hsv, 0.01)));
+  for (let i=0;i<25;i++){
+    const rgb = [Math.random(),Math.random(),Math.random()];
+    assert(`round-trip #${i}`, triEq(hsv2rgb(...rgb2hsv(...rgb)), rgb, 0.01));
+  }
+  assert('hsv2rgb V=0 -> black', triEq(hsv2rgb(0.4,0.7,0),[0,0,0],0.001));
+  assert('hsv2rgb S=0 -> gray=V', triEq(hsv2rgb(0.4,0,0.6),[0.6,0.6,0.6],0.001));
+
+  ALL_FAMILIES.forEach(fam => {
+    for (let i=0;i<15;i++){
+      let q;
+      try { q = generateOne(fam); } catch(e){ assert(`${fam} #${i} threw: ${e.message}`, false); continue; }
+      assert(`${fam} #${i}: 4 options`, q.options && q.options.length===4);
+      assert(`${fam} #${i}: correctIndex in range`, q.correctIndex>=0 && q.correctIndex<4);
+      assert(`${fam} #${i}: whyWrongHe length 4`, q.whyWrongHe && q.whyWrongHe.length===4);
+      assert(`${fam} #${i}: whyCorrectHe present`, !!q.whyCorrectHe);
+      assert(`${fam} #${i}: options same kind`, q.options.every(o => o.kind===q.options[0].kind));
+      if (q.answerType === 'image'){
+        for (let a=0;a<4;a++) for (let b=a+1;b<4;b++)
+          assert(`${fam} #${i}: opt ${a}/${b} distinct`, !statesVisuallyEqual(q.options[a].state, q.options[b].state));
+      } else {
+        assert(`${fam} #${i}: text options unique`, new Set(q.options.map(o=>o.label)).size===4);
+      }
+    }
+  });
+
+  const failed = results.filter(r => !r.pass);
+  console.log(`Self-test: ${results.length-failed.length}/${results.length} passed`);
+  if (failed.length) console.log('FAILURES:', failed.map(f=>f.name));
+  const div = document.createElement('div');
+  div.id = 'selftest-results';
+  div.style.cssText = 'position:fixed;top:0;left:0;background:#000;color:#0f0;padding:10px;font:12px monospace;z-index:9999;max-width:100vw;max-height:100vh;overflow:auto;white-space:pre-wrap';
+  div.textContent = (failed.length===0 ? 'ALL PASS ' : 'FAILURES ') + (results.length-failed.length)+'/'+results.length + (failed.length ? ' :: '+failed.map(f=>f.name).join(' | ') : '');
+  document.body.appendChild(div);
+  return failed.length===0;
+}
+if (new URLSearchParams(location.search).get('selftest') === '1') runSelfTests();
+</script>
+</body>
+</html>
